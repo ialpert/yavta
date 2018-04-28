@@ -134,52 +134,14 @@ static void errno_exit(const char *s)
         exit(EXIT_FAILURE);
 }
 
-static bool video_is_mplane(struct device *dev)
-{
-	return dev->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ||
-	       dev->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-}
-
 static bool video_is_capture(struct device *dev)
 {
-	return dev->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ||
-	       dev->type == V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	return dev->type == V4L2_BUF_TYPE_VIDEO_CAPTURE;
 }
 
 static bool video_is_output(struct device *dev)
 {
-	return dev->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ||
-	       dev->type == V4L2_BUF_TYPE_VIDEO_OUTPUT;
-}
-
-static struct {
-	enum v4l2_buf_type type;
-	bool supported;
-	const char *name;
-	const char *string;
-} buf_types[] = {
-	{ V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 1, "Video capture mplanes", "capture-mplane", },
-	{ V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 1, "Video output", "output-mplane", },
-	{ V4L2_BUF_TYPE_VIDEO_CAPTURE, 1, "Video capture", "capture", },
-	{ V4L2_BUF_TYPE_VIDEO_OUTPUT, 1, "Video output mplanes", "output", },
-	{ V4L2_BUF_TYPE_VIDEO_OVERLAY, 0, "Video overlay", "overlay" },
-};
-
-
-
-static const char *v4l2_buf_type_name(enum v4l2_buf_type type)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(buf_types); ++i) {
-		if (buf_types[i].type == type)
-			return buf_types[i].name;
-	}
-
-	if (type & V4L2_BUF_TYPE_PRIVATE)
-		return "Private";
-	else
-		return "Unknown";
+	return  dev->type == V4L2_BUF_TYPE_VIDEO_OUTPUT;
 }
 
 #define MMAL_ENCODING_UNUSED 0
@@ -273,52 +235,6 @@ static const struct v4l2_format_info *v4l2_format_by_fourcc(unsigned int fourcc)
 	return NULL;
 }
 
-static const char *v4l2_format_name(unsigned int fourcc)
-{
-	const struct v4l2_format_info *info;
-	static char name[5];
-	unsigned int i;
-
-	info = v4l2_format_by_fourcc(fourcc);
-	if (info)
-		return info->name;
-
-	for (i = 0; i < 4; ++i) {
-		name[i] = fourcc & 0xff;
-		fourcc >>= 8;
-	}
-
-	name[4] = '\0';
-	return name;
-}
-
-static const struct {
-	const char *name;
-	enum v4l2_field field;
-} fields[] = {
-	{ "any", V4L2_FIELD_ANY },
-	{ "none", V4L2_FIELD_NONE },
-	{ "top", V4L2_FIELD_TOP },
-	{ "bottom", V4L2_FIELD_BOTTOM },
-	{ "interlaced", V4L2_FIELD_INTERLACED },
-	{ "seq-tb", V4L2_FIELD_SEQ_TB },
-	{ "seq-bt", V4L2_FIELD_SEQ_BT },
-	{ "alternate", V4L2_FIELD_ALTERNATE },
-	{ "interlaced-tb", V4L2_FIELD_INTERLACED_TB },
-	{ "interlaced-bt", V4L2_FIELD_INTERLACED_BT },
-};
-
-static const char *v4l2_field_name(enum v4l2_field field)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(fields); ++i) {
-		if (fields[i].field == field)
-			return fields[i].name;
-	}
-
-	return "unknown";
-}
 
 static void video_set_buf_type(struct device *dev, enum v4l2_buf_type type)
 {
@@ -411,40 +327,14 @@ static int cap_get_buf_type(unsigned int capabilities)
 
 static void video_close(struct device *dev)
 {
-	unsigned int i;
-
-	for (i = 0; i < dev->num_planes; i++)
-		free(dev->pattern[i]);
-
 	free(dev->buffers);
 	if (dev->opened)
 		close(dev->fd);
 }
 
-
-static int query_control(struct device *dev, unsigned int id,
-			 struct v4l2_queryctrl *query)
-{
-	int ret;
-
-	memset(query, 0, sizeof(*query));
-	query->id = id;
-
-	ret = ioctl(dev->fd, VIDIOC_QUERYCTRL, query);
-	if (ret < 0 && errno != EINVAL)
-		print("unable to query control 0x%8.8x: %s (%d).\n",
-		       id, strerror(errno), errno);
-
-	return ret;
-}
-
-
-
-
 static int video_get_format(struct device *dev)
 {
 	struct v4l2_format fmt;
-	unsigned int i;
 	int ret;
 
 	memset(&fmt, 0, sizeof fmt);
@@ -464,12 +354,6 @@ static int video_get_format(struct device *dev)
 
 		dev->plane_fmt[0].bytesperline = fmt.fmt.pix.bytesperline;
 		dev->plane_fmt[0].sizeimage = fmt.fmt.pix.bytesperline ? fmt.fmt.pix.sizeimage : 0;
-
-		print("Video format: %s (%08x) %ux%u (stride %u) field %s buffer size %u\n",
-			v4l2_format_name(fmt.fmt.pix.pixelformat), fmt.fmt.pix.pixelformat,
-			fmt.fmt.pix.width, fmt.fmt.pix.height, fmt.fmt.pix.bytesperline,
-			v4l2_field_name(fmt.fmt.pix_mp.field),
-			fmt.fmt.pix.sizeimage);
 
 	return 0;
 }
@@ -502,27 +386,12 @@ static int video_set_format(struct device *dev, unsigned int w, unsigned int h,
 			    unsigned int flags)
 {
 	struct v4l2_format fmt;
-	unsigned int i;
 	int ret;
 
 	memset(&fmt, 0, sizeof fmt);
 	fmt.type = dev->type;
 
-	if (video_is_mplane(dev)) {
-		const struct v4l2_format_info *info = v4l2_format_by_fourcc(format);
-
-		fmt.fmt.pix_mp.width = w;
-		fmt.fmt.pix_mp.height = h;
-		fmt.fmt.pix_mp.pixelformat = format;
-		fmt.fmt.pix_mp.field = field;
-		fmt.fmt.pix_mp.num_planes = info->n_planes;
-		fmt.fmt.pix_mp.flags = flags;
-
-		for (i = 0; i < fmt.fmt.pix_mp.num_planes; i++) {
-			fmt.fmt.pix_mp.plane_fmt[i].bytesperline = stride;
-			fmt.fmt.pix_mp.plane_fmt[i].sizeimage = buffer_size;
-		}
-	} else {
+{
 		fmt.fmt.pix.width = w;
 		fmt.fmt.pix.height = h;
 		fmt.fmt.pix.pixelformat = format;
@@ -542,26 +411,6 @@ static int video_set_format(struct device *dev, unsigned int w, unsigned int h,
 		print("Unable to set format: %s (%d).\n", strerror(errno),
 			errno);
 		return ret;
-	}
-
-	if (video_is_mplane(dev)) {
-		print("Video format set: %s (%08x) %ux%u field %s, %u planes: \n",
-			v4l2_format_name(fmt.fmt.pix_mp.pixelformat), fmt.fmt.pix_mp.pixelformat,
-			fmt.fmt.pix_mp.width, fmt.fmt.pix_mp.height,
-			v4l2_field_name(fmt.fmt.pix_mp.field),
-			fmt.fmt.pix_mp.num_planes);
-
-		for (i = 0; i < fmt.fmt.pix_mp.num_planes; i++) {
-			print(" * Stride %u, buffer size %u\n",
-				fmt.fmt.pix_mp.plane_fmt[i].bytesperline,
-				fmt.fmt.pix_mp.plane_fmt[i].sizeimage);
-		}
-	} else {
-		print("Video format set: %s (%08x) %ux%u (stride %u) field %s buffer size %u\n",
-			v4l2_format_name(fmt.fmt.pix.pixelformat), fmt.fmt.pix.pixelformat,
-			fmt.fmt.pix.width, fmt.fmt.pix.height, fmt.fmt.pix.bytesperline,
-			v4l2_field_name(fmt.fmt.pix.field),
-			fmt.fmt.pix.sizeimage);
 	}
 
 	return 0;
@@ -597,10 +446,7 @@ static int video_buffer_mmap(struct device *dev, struct buffer *buffer,
 	unsigned int i;
 
 	for (i = 0; i < dev->num_planes; i++) {
-		if (video_is_mplane(dev)) {
-			length = v4l2buf->m.planes[i].length;
-			offset = v4l2buf->m.planes[i].m.mem_offset;
-		} else {
+{
 			length = v4l2buf->length;
 			offset = v4l2buf->m.offset;
 		}
@@ -651,9 +497,7 @@ static int video_buffer_alloc_userptr(struct device *dev, struct buffer *buffer,
 	int ret;
 
 	for (i = 0; i < dev->num_planes; i++) {
-		if (video_is_mplane(dev))
-			length = v4l2buf->m.planes[i].length;
-		else
+
 			length = v4l2buf->length;
 
 		ret = posix_memalign(&buffer->mem[i], page_size,
@@ -690,7 +534,7 @@ static void video_buffer_fill_userptr(struct device *dev, struct buffer *buffer,
 {
 	unsigned int i;
 
-	if (!video_is_mplane(dev)) {
+	{
 		v4l2buf->m.userptr = (unsigned long)buffer->mem[0];
 		return;
 	}
@@ -779,7 +623,8 @@ static int video_alloc_buffers(struct device *dev, int nbufs,
 
 		buffers[i].idx = i;
 
-		switch (dev->memtype) {
+		switch (dev->memtype)
+		{
 		case V4L2_MEMORY_MMAP:
 			ret = video_buffer_mmap(dev, &buffers[i], &buf);
 			break;
@@ -907,20 +752,9 @@ static int video_queue_buffer(struct device *dev, int index, enum buffer_fill_mo
 		}
 	}
 
-	if (video_is_mplane(dev)) {
-		buf.m.planes = planes;
-		buf.length = dev->num_planes;
-	}
 
 	if (dev->memtype == V4L2_MEMORY_USERPTR) {
-		if (video_is_mplane(dev)) {
-			for (i = 0; i < dev->num_planes; i++) {
-				buf.m.planes[i].m.userptr = (unsigned long)
-					dev->buffers[index].mem[i];
-				buf.m.planes[i].length =
-					dev->buffers[index].size[i];
-			}
-		} else {
+	 {
 			buf.m.userptr = (unsigned long)dev->buffers[index].mem[0];
 			buf.length = dev->buffers[index].size[0];
 		}
@@ -928,9 +762,7 @@ static int video_queue_buffer(struct device *dev, int index, enum buffer_fill_mo
 
 	for (i = 0; i < dev->num_planes; i++) {
 		if (video_is_output(dev)) {
-			if (video_is_mplane(dev))
-				buf.m.planes[i].bytesused = dev->patternsize[i];
-			else
+
 				buf.bytesused = dev->patternsize[i];
 
 			memcpy(dev->buffers[buf.index].mem[i], dev->pattern[i],
@@ -969,90 +801,7 @@ static int video_enable(struct device *dev, int enable)
 	return 0;
 }
 
-static void video_query_menu(struct device *dev, struct v4l2_queryctrl *query,
-			     unsigned int value)
-{
-	struct v4l2_querymenu menu;
-	int ret;
-
-	for (menu.index = query->minimum;
-	     menu.index <= (unsigned)query->maximum; menu.index++) {
-		menu.id = query->id;
-		ret = ioctl(dev->fd, VIDIOC_QUERYMENU, &menu);
-		if (ret < 0)
-			continue;
-
-		if (query->type == V4L2_CTRL_TYPE_MENU)
-			print("  %u: %.32s%s\n", menu.index, menu.name,
-			       menu.index == value ? " (*)" : "");
-		else
-			print("  %u: %lld%s\n", menu.index, menu.value,
-			       menu.index == value ? " (*)" : "");
-	};
-}
-
-static int video_load_test_pattern(struct device *dev, const char *filename)
-{
-	unsigned int plane;
-	unsigned int size;
-	int fd = -1;
-	int ret;
-
-	if (filename != NULL) {
-		fd = open(filename, O_RDONLY);
-		if (fd == -1) {
-			print("Unable to open test pattern file '%s': %s (%d).\n",
-				filename, strerror(errno), errno);
-			return -errno;
-		}
-	}
-
-	/* Load or generate the test pattern */
-	for (plane = 0; plane < dev->num_planes; plane++) {
-		size = dev->buffers[0].size[plane];
-		dev->pattern[plane] = malloc(size);
-		if (dev->pattern[plane] == NULL) {
-			ret = -ENOMEM;
-			goto done;
-		}
-
-		if (filename != NULL) {
-			ret = read(fd, dev->pattern[plane], size);
-			if (ret != (int)size && dev->plane_fmt[plane].bytesperline != 0) {
-				print("Test pattern file size %u doesn't match image size %u\n",
-					ret, size);
-				ret = -EINVAL;
-				goto done;
-			}
-		} else {
-			uint8_t *data = dev->pattern[plane];
-			unsigned int i;
-
-			if (dev->plane_fmt[plane].bytesperline == 0) {
-				print("Compressed format detected for plane %u and no test pattern filename given.\n"
-					"The test pattern can't be generated automatically.\n", plane);
-				ret = -EINVAL;
-				goto done;
-			}
-
-			for (i = 0; i < dev->plane_fmt[plane].sizeimage; ++i)
-				*data++ = i;
-		}
-
-		dev->patternsize[plane] = size;
-	}
-
-	ret = 0;
-
-done:
-	if (fd != -1)
-		close(fd);
-
-	return ret;
-}
-
-static int video_prepare_capture(struct device *dev, int nbufs, unsigned int offset,
-				 const char *filename, enum buffer_fill_mode fill)
+static int video_prepare_capture(struct device *dev, int nbufs, unsigned int offset, enum buffer_fill_mode fill)
 {
 	unsigned int padding;
 	int ret;
@@ -1061,12 +810,6 @@ static int video_prepare_capture(struct device *dev, int nbufs, unsigned int off
 	padding = (fill & BUFFER_FILL_PADDING) ? 4096 : 0;
 	if ((ret = video_alloc_buffers(dev, nbufs, offset, padding)) < 0)
 		return ret;
-
-	if (video_is_output(dev)) {
-		ret = video_load_test_pattern(dev, filename);
-		if (ret < 0)
-			return ret;
-	}
 
 	return 0;
 }
@@ -1253,95 +996,39 @@ static void render_encoder_input_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_
 
 #define LOG_DEBUG print
 
-static void dump_port_format(MMAL_ES_FORMAT_T *format)
-{
-   const char *name_type;
-
-   if (!format)
-      return;
-
-   switch(format->type)
-   {
-   case MMAL_ES_TYPE_AUDIO: name_type = "audio"; break;
-   case MMAL_ES_TYPE_VIDEO: name_type = "video"; break;
-   case MMAL_ES_TYPE_SUBPICTURE: name_type = "subpicture"; break;
-   default: name_type = "unknown"; break;
-   }
-
-   LOG_DEBUG("type: %s, fourcc: %4.4s", name_type, (char *)&format->encoding);
-   LOG_DEBUG(" bitrate: %i, framed: %i", format->bitrate,
-            !!(format->flags & MMAL_ES_FORMAT_FLAG_FRAMED));
-   LOG_DEBUG(" extra data: %i, %p", format->extradata_size, format->extradata);
-   switch(format->type)
-   {
-   case MMAL_ES_TYPE_AUDIO:
-      LOG_DEBUG(" samplerate: %i, channels: %i, bps: %i, block align: %i",
-               format->es->audio.sample_rate, format->es->audio.channels,
-               format->es->audio.bits_per_sample, format->es->audio.block_align);
-      break;
-
-   case MMAL_ES_TYPE_VIDEO:
-      LOG_DEBUG(" width: %i, height: %i, (%i,%i,%i,%i)",
-               format->es->video.width, format->es->video.height,
-               format->es->video.crop.x, format->es->video.crop.y,
-               format->es->video.crop.width, format->es->video.crop.height);
-      LOG_DEBUG(" pixel aspect ratio: %i/%i, frame rate: %i/%i",
-               format->es->video.par.num, format->es->video.par.den,
-               format->es->video.frame_rate.num, format->es->video.frame_rate.den);
-      break;
-
-   case MMAL_ES_TYPE_SUBPICTURE:
-      break;
-
-   default: break;
-   }
-}
-
-void mmal_log_dump_port(MMAL_PORT_T *port)
-{
-   if (!port)
-      return;
-
-   LOG_DEBUG("%s(%p)", port->name, port);
-
-   dump_port_format(port->format);
-
-   LOG_DEBUG(" buffers num: %i(opt %i, min %i), size: %i(opt %i, min: %i), align: %i",
-            port->buffer_num, port->buffer_num_recommended, port->buffer_num_min,
-            port->buffer_size, port->buffer_size_recommended, port->buffer_size_min,
-            port->buffer_alignment_min);
-}
 
 int video_set_dv_timings(struct device *dev);
 
-static void handle_event(struct device *dev)
+ int handle_event(struct device *dev)
 {
-        struct v4l2_event ev;
+	struct v4l2_event ev;
 
-        while (!ioctl(dev->fd, VIDIOC_DQEVENT, &ev)) {
-            switch (ev.type) {
-            case V4L2_EVENT_SOURCE_CHANGE:
-                fprintf(stderr, "Source changed\n");
+	while (!ioctl(dev->fd, VIDIOC_DQEVENT, &ev))
+	{
+		switch (ev.type)
+		{
+		case V4L2_EVENT_SOURCE_CHANGE:
+			//fprintf(stderr, "Source changed\n");
 
-		video_set_dv_timings(dev);
-//                stop_capture(V4L2_BUF_TYPE_VIDEO_CAPTURE);
-//                unmap_buffers(buffers, n_buffers);
+			 video_enable(dev, 0);
+			 video_free_buffers(dev);
+			 destroy_mmal(dev);
+			 video_close(dev);
 
-                fprintf(stderr, "Unmapped all buffers\n");
-//                free_buffers_mmap(V4L2_BUF_TYPE_VIDEO_CAPTURE);
+			return start_video("/dev/video0");
 
-//                init_mmap(V4L2_BUF_TYPE_VIDEO_CAPTURE, &buffers, &n_buffers);
 
-//                start_capturing_mmap(V4L2_BUF_TYPE_VIDEO_CAPTURE, buffers, n_buffers);
-                break;
-            case V4L2_EVENT_EOS:
-                fprintf(stderr, "EOS\n");
-                break;
-            }
-        }
+			break;
+		case V4L2_EVENT_EOS:
+			fprintf(stderr, "EOS\n");
+			break;
+		}
+	}
+
+	return 0;
 }
 
-static int setup_mmal(struct device *dev, int nbufs, int do_encode, const char *filename)
+static int setup_mmal(struct device *dev, int nbufs, int do_encode)
 {
 	MMAL_STATUS_T status;
 	VCOS_STATUS_T vcos_status;
@@ -1349,7 +1036,7 @@ static int setup_mmal(struct device *dev, int nbufs, int do_encode, const char *
 	const struct v4l2_format_info *info;
 	struct v4l2_format fmt;
 	int ret;
-	MMAL_PORT_T *isp_output, *encoder_input, *encoder_output;
+	MMAL_PORT_T *isp_output, *encoder_input = NULL, *encoder_output = NULL;
 
 	//FIXME: Clean up after errors
 
@@ -1387,28 +1074,26 @@ static int setup_mmal(struct device *dev, int nbufs, int do_encode, const char *
 
 	ret = ioctl(dev->fd, VIDIOC_G_FMT, &fmt);
 	if (ret < 0) {
-		print("Unable to get format: %s (%d).\n", strerror(errno),
-			errno);
+		print("Unable to get format: %s (%d).\n", strerror(errno), errno);
 		return ret;
 	}
 
 	info = v4l2_format_by_fourcc(fmt.fmt.pix.pixelformat);
+
 	if (!info || info->mmal_encoding == MMAL_ENCODING_UNUSED)
 	{
 		print("Unsupported encoding\n");
 		return -1;
 	}
+
 	port->format->encoding = info->mmal_encoding;
 	port->format->es->video.crop.width = fmt.fmt.pix.width;
 	port->format->es->video.crop.height = fmt.fmt.pix.height;
 	port->format->es->video.width = (port->format->es->video.crop.width+31) & ~31;
-	//mmal_encoding_stride_to_width(port->format->encoding, fmt.fmt.pix.bytesperline);
-	/* FIXME - buffer may not be aligned vertically */
+
 	port->format->es->video.height = (fmt.fmt.pix.height+15) & ~15;
-	//Ignore for now, but will be wanted for video encode.
-	//port->format->es->video.frame_rate.num = 10000;
-	//port->format->es->video.frame_rate.den = frame_interval ? frame_interval : 10000;
 	port->buffer_num = nbufs;
+
 	if (dev->fps) {
 		dev->frame_time_usec = 1000000/dev->fps;
 	}
@@ -1419,7 +1104,7 @@ static int setup_mmal(struct device *dev, int nbufs, int do_encode, const char *
 		print("Commit failed\n");
 		return -1;
 	}
-	mmal_log_dump_port(port);
+
 
 	unsigned int mmal_stride = mmal_encoding_width_to_stride(info->mmal_encoding, port->format->es->video.width);
 	if (mmal_stride != fmt.fmt.pix.bytesperline) {
@@ -1533,11 +1218,7 @@ static int setup_mmal(struct device *dev, int nbufs, int do_encode, const char *
 		mmal_port_parameter_set_boolean(encoder_output, MMAL_PARAMETER_VIDEO_ENCODE_INLINE_HEADER, 1);
 
 		//set INLINE VECTORS flag to request motion vector estimates
-		if (mmal_port_parameter_set_boolean(encoder_output, MMAL_PARAMETER_VIDEO_ENCODE_INLINE_VECTORS, 0) != MMAL_SUCCESS)
-		{
-			print("failed to set INLINE VECTORS parameters\n");
-			// Continue rather than abort..
-		}
+		mmal_port_parameter_set_boolean(encoder_output, MMAL_PARAMETER_VIDEO_ENCODE_INLINE_VECTORS, 0);
 
 		if (status != MMAL_SUCCESS)
 		{
@@ -1596,7 +1277,7 @@ static int setup_mmal(struct device *dev, int nbufs, int do_encode, const char *
 
 		print("Create pool of %d buffers of size %d for encode ip\n", encoder_input->buffer_num, 0);
 		dev->encode_pool = mmal_port_pool_create(encoder_input, isp_output->buffer_num, isp_output->buffer_size);
-		if(!dev->encode_pool)
+		if (!dev->encode_pool)
 		{
 			print("Failed to create encode ip pool\n");
 			return -1;
@@ -1681,89 +1362,18 @@ static int setup_mmal(struct device *dev, int nbufs, int do_encode, const char *
 	return 0;
 }
 
-static void destroy_mmal(struct device *dev)
+ void destroy_mmal(struct device *dev)
 {
 	//FIXME: Clean up everything properly
 	dev->thread_quit = 1;
 	vcos_thread_join(&dev->save_thread, NULL);
+
+	mmal_component_destroy(dev->render);
+	mmal_component_destroy(dev->encoder);
+	mmal_component_destroy(dev->isp);
 }
 
-static void video_save_image(struct device *dev, struct v4l2_buffer *buf,
-			     const char *pattern, unsigned int sequence)
-{
-	unsigned int size;
-	unsigned int i;
-	char *filename;
-	const char *p;
-	bool append;
-	int ret = 0;
-	int fd;
-
-	size = strlen(pattern);
-	filename = malloc(size + 12);
-	if (filename == NULL)
-		return;
-
-	p = strchr(pattern, '#');
-	if (p != NULL) {
-		sprintf(filename, "%.*s%06u%s", (int)(p - pattern), pattern,
-			sequence, p + 1);
-		append = false;
-	} else {
-		strcpy(filename, pattern);
-		append = true;
-	}
-
-	fd = open(filename, O_CREAT | O_WRONLY | (append ? O_APPEND : O_TRUNC),
-		  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-	free(filename);
-	if (fd == -1)
-		return;
-
-	for (i = 0; i < dev->num_planes; i++) {
-		void *data = dev->buffers[buf->index].mem[i];
-		unsigned int length;
-
-		if (video_is_mplane(dev)) {
-			length = buf->m.planes[i].bytesused;
-
-			if (!dev->write_data_prefix) {
-				data += buf->m.planes[i].data_offset;
-				length -= buf->m.planes[i].data_offset;
-			}
-
-		} else {
-			length = buf->bytesused;
-		}
-
-		ret = write(fd, data, length);
-		if (ret < 0) {
-			print("write error: %s (%d)\n", strerror(errno), errno);
-			break;
-		} else if (ret != (int)length)
-			print("write error: only %d bytes written instead of %u\n",
-			       ret, length);
-	}
-	close(fd);
-}
-
-unsigned int video_buffer_bytes_used(struct device *dev, struct v4l2_buffer *buf)
-{
-	unsigned int bytesused = 0;
-	unsigned int i;
-
-	if (!video_is_mplane(dev))
-		return buf->bytesused;
-
-	for (i = 0; i < dev->num_planes; i++)
-		bytesused += buf->m.planes[i].bytesused;
-
-	return bytesused;
-}
-
-static int video_do_capture(struct device *dev, unsigned int nframes,
-	unsigned int skip, unsigned int delay, const char *pattern,
-	int do_requeue_last, int do_queue_late, enum buffer_fill_mode fill)
+ int video_do_capture(struct device *dev, enum buffer_fill_mode fill)
 {
 	struct v4l2_plane planes[VIDEO_MAX_PLANES];
 	struct v4l2_buffer buf;
@@ -1782,188 +1392,173 @@ static int video_do_capture(struct device *dev, unsigned int nframes,
 	if (ret < 0)
 		goto done;
 
-	if (do_queue_late)
-		video_queue_all_buffers(dev, fill);
-
 	size = 0;
 	clock_gettime(CLOCK_MONOTONIC, &start);
 	last.tv_sec = start.tv_sec;
 	last.tv_usec = start.tv_nsec / 1000;
 
-        while (i < nframes) {
-                for (;;) {
-                        fd_set fds[3];
-                        fd_set *rd_fds = &fds[0]; /* for capture */
-                        fd_set *ex_fds = &fds[1]; /* for capture */
-                        fd_set *wr_fds = &fds[2]; /* for output */
-                        struct timeval tv;
-                        int r;
+	for (;;)
+	{
+		fd_set fds[3];
+		fd_set *rd_fds = &fds[0]; /* for capture */
+		fd_set *ex_fds = &fds[1]; /* for capture */
+		fd_set *wr_fds = &fds[2]; /* for output */
+		struct timeval tv;
+		int r;
 
-                        if (rd_fds) {
-                            FD_ZERO(rd_fds);
-                            FD_SET(dev->fd, rd_fds);
-                        }
+		if (rd_fds)
+		{
+			FD_ZERO(rd_fds);
+			FD_SET(dev->fd, rd_fds);
+		}
 
-                        if (ex_fds) {
-                            FD_ZERO(ex_fds);
-                            FD_SET(dev->fd, ex_fds);
-                        }
+		if (ex_fds)
+		{
+			FD_ZERO(ex_fds);
+			FD_SET(dev->fd, ex_fds);
+		}
 
-                        if (wr_fds) {
-                        //    FD_ZERO(wr_fds);
-                        //    FD_SET(fd, wr_fds);
-                        }
+		/* Timeout. */
+		tv.tv_sec = 10;
+		tv.tv_usec = 0;
 
-                        /* Timeout. */
-                        tv.tv_sec = 10;
-                        tv.tv_usec = 0;
+		r = select(dev->fd + 1, rd_fds, wr_fds, ex_fds, &tv);
 
-                        r = select(dev->fd + 1, rd_fds, wr_fds, ex_fds, &tv);
+		if (-1 == r)
+		{
+			if (EINTR == errno)
+				continue;
+			errno_exit("select");
+		}
 
-                        if (-1 == r) {
-                                if (EINTR == errno)
-                                        continue;
-                                errno_exit("select");
-                        }
+		if (0 == r)
+		{
+			fprintf(stderr, "select timeout\n");
+			exit(EXIT_FAILURE);
+		}
 
-                        if (0 == r) {
-                                fprintf(stderr, "select timeout\n");
-                                exit(EXIT_FAILURE);
-                        }
+		if (rd_fds && FD_ISSET(dev->fd, rd_fds))
+		{
+			const char *ts_type, *ts_source;
+			int queue_buffer = 1;
+			/* Dequeue a buffer. */
+			memset(&buf, 0, sizeof buf);
+			memset(planes, 0, sizeof planes);
 
-                        if (rd_fds && FD_ISSET(dev->fd, rd_fds)) {
-				const char *ts_type, *ts_source;
-				int queue_buffer = 1;
-				/* Dequeue a buffer. */
-				memset(&buf, 0, sizeof buf);
-				memset(planes, 0, sizeof planes);
+			buf.type = dev->type;
+			buf.memory = dev->memtype;
+			buf.length = VIDEO_MAX_PLANES;
+			buf.m.planes = planes;
 
-				buf.type = dev->type;
-				buf.memory = dev->memtype;
-				buf.length = VIDEO_MAX_PLANES;
-				buf.m.planes = planes;
-
-				ret = ioctl(dev->fd, VIDIOC_DQBUF, &buf);
-				if (ret < 0) {
-					if (errno != EIO) {
-						print("Unable to dequeue buffer: %s (%d).\n",
-							strerror(errno), errno);
-						goto done;
-					}
-					buf.type = dev->type;
-					buf.memory = dev->memtype;
-					if (dev->memtype == V4L2_MEMORY_USERPTR)
-						video_buffer_fill_userptr(dev, &dev->buffers[i], &buf);
-				}
-
-				if (video_is_capture(dev))
-					video_verify_buffer(dev, &buf);
-				//print("bytesused in buffer is %d\n", buf.bytesused);
-				size += buf.bytesused;
-
-				fps = (buf.timestamp.tv_sec - last.tv_sec) * 1000000
-				    + buf.timestamp.tv_usec - last.tv_usec;
-				fps = fps ? 1000000.0 / fps : 0.0;
-
-				clock_gettime(CLOCK_MONOTONIC, &ts);
-				get_ts_flags(buf.flags, &ts_type, &ts_source);
-		/*		print("%u (%u) [%c] %s %u %u B %ld.%06ld %ld.%06ld %.3f fps ts %s/%s\n", i, buf.index,
-					(buf.flags & V4L2_BUF_FLAG_ERROR) ? 'E' : '-',
-					v4l2_field_name(buf.field),
-					buf.sequence, video_buffer_bytes_used(dev, &buf),
-					buf.timestamp.tv_sec, buf.timestamp.tv_usec,
-					ts.tv_sec, ts.tv_nsec/1000, fps,
-					ts_type, ts_source);*/
-
-				last = buf.timestamp;
-
-				/* Save the image. */
-				if (video_is_capture(dev) && pattern && !skip)
-					video_save_image(dev, &buf, pattern, i);
-
-				if (dev->mmal_pool) {
-					MMAL_BUFFER_HEADER_T *mmal = mmal_queue_get(dev->mmal_pool->queue);
-					MMAL_STATUS_T status;
-					if (!mmal) {
-						print("Failed to get MMAL buffer\n");
-					} else {
-						/* Need to wait for MMAL to be finished with the buffer before returning to V4L2 */
-						queue_buffer = 0;
-						if (((struct buffer*)mmal->user_data)->idx != buf.index) {
-							print("Mismatch in expected buffers. V4L2 gave idx %d, MMAL expecting %d\n",
-								buf.index, ((struct buffer*)mmal->user_data)->idx);
-						}
-						/*if (buf.bytesused != buf.length)
-						{
-							print("V4L2 buffer came back as shorter than allocated - length %u, bytesused %u\n",
-							       buf.length, buf.bytesused);
-						}*/
-						mmal->length = buf.length;	//Deliberately use length as MMAL wants the padding
-
-						if (!dev->starttime.tv_sec)
-							dev->starttime = buf.timestamp;
-
-						struct timeval pts;
-						timersub(&buf.timestamp, &dev->starttime, &pts);
-						//MMAL PTS is in usecs, so convert from struct timeval
-						mmal->pts = (pts.tv_sec * 1000000) + pts.tv_usec;
-						if (mmal->pts > (dev->lastpts+dev->frame_time_usec+1000)) {
-							print("DROPPED FRAME - %lld and %lld, delta %lld\n", dev->lastpts, mmal->pts, mmal->pts-dev->lastpts);
-							dropped_frames++;
-						}
-						dev->lastpts = mmal->pts;
-
-						mmal->flags = MMAL_BUFFER_HEADER_FLAG_FRAME_END;
-						//mmal->pts = buf.timestamp;
-						status = mmal_port_send_buffer(dev->isp->input[0], mmal);
-						if (status != MMAL_SUCCESS)
-							print("mmal_port_send_buffer failed %d\n", status);
-					}
-				}
-
-				if (skip)
-					--skip;
-
-				/* Requeue the buffer. */
-				if (delay > 0)
-					usleep(delay * 1000);
-
-				fflush(stdout);
-
-				if (i >= nframes - dev->nbufs && !do_requeue_last)
-					continue;
-				if (!queue_buffer)
-					continue;
-
-				ret = video_queue_buffer(dev, buf.index, fill);
-				if (ret < 0) {
-					print("Unable to requeue buffer: %s (%d).\n",
-						strerror(errno), errno);
+			ret = ioctl(dev->fd, VIDIOC_DQBUF, &buf);
+			if (ret < 0)
+			{
+				if (errno != EIO)
+				{
+					print("Unable to dequeue buffer: %s (%d).\n",
+						  strerror(errno), errno);
 					goto done;
 				}
-				i++;
-                        }
-                        if (wr_fds && FD_ISSET(dev->fd, wr_fds)) {
-                            fprintf(stderr, "Writing?!?!?\n");
-                        }
-                        if (ex_fds && FD_ISSET(dev->fd, ex_fds)) {
-                            fprintf(stderr, "Exception\n");
-                            handle_event(dev);
-                        }
-                        /* EAGAIN - continue select loop. */
-                }
-        }
+				buf.type = dev->type;
+				buf.memory = dev->memtype;
+				if (dev->memtype == V4L2_MEMORY_USERPTR)
+					video_buffer_fill_userptr(dev, &dev->buffers[i], &buf);
+			}
 
+			if (video_is_capture(dev))
+				video_verify_buffer(dev, &buf);
+			//print("bytesused in buffer is %d\n", buf.bytesused);
+			size += buf.bytesused;
+
+			fps = (buf.timestamp.tv_sec - last.tv_sec) * 1000000 + buf.timestamp.tv_usec - last.tv_usec;
+			fps = fps ? 1000000.0 / fps : 0.0;
+
+			clock_gettime(CLOCK_MONOTONIC, &ts);
+			get_ts_flags(buf.flags, &ts_type, &ts_source);
+
+			last = buf.timestamp;
+
+			if (dev->mmal_pool)
+			{
+				MMAL_BUFFER_HEADER_T *mmal = mmal_queue_get(dev->mmal_pool->queue);
+				MMAL_STATUS_T status;
+				if (!mmal)
+				{
+					print("Failed to get MMAL buffer\n");
+				}
+				else
+				{
+					/* Need to wait for MMAL to be finished with the buffer before returning to V4L2 */
+					queue_buffer = 0;
+					if (((struct buffer *)mmal->user_data)->idx != buf.index)
+					{
+						print("Mismatch in expected buffers. V4L2 gave idx %d, MMAL expecting %d\n",
+							  buf.index, ((struct buffer *)mmal->user_data)->idx);
+					}
+
+					mmal->length = buf.length; //Deliberately use length as MMAL wants the padding
+
+					if (!dev->starttime.tv_sec)
+						dev->starttime = buf.timestamp;
+
+					struct timeval pts;
+					timersub(&buf.timestamp, &dev->starttime, &pts);
+					//MMAL PTS is in usecs, so convert from struct timeval
+					mmal->pts = (pts.tv_sec * 1000000) + pts.tv_usec;
+					if (mmal->pts > (dev->lastpts + dev->frame_time_usec + 1000))
+					{
+						print("DROPPED FRAME - %lld and %lld, delta %lld\n", dev->lastpts, mmal->pts, mmal->pts - dev->lastpts);
+						dropped_frames++;
+					}
+					dev->lastpts = mmal->pts;
+
+					mmal->flags = MMAL_BUFFER_HEADER_FLAG_FRAME_END;
+					//mmal->pts = buf.timestamp;
+					status = mmal_port_send_buffer(dev->isp->input[0], mmal);
+					if (status != MMAL_SUCCESS)
+						print("mmal_port_send_buffer failed %d\n", status);
+				}
+			}
+
+			/* Requeue the buffer. */
+			// if (delay > 0)
+			// 	usleep(delay * 1000);
+
+			fflush(stdout);
+
+			if (!queue_buffer)
+				continue;
+
+			ret = video_queue_buffer(dev, buf.index, fill);
+			if (ret < 0)
+			{
+				print("Unable to requeue buffer: %s (%d).\n",
+					  strerror(errno), errno);
+				goto done;
+			}
+		}
+		if (wr_fds && FD_ISSET(dev->fd, wr_fds))
+		{
+			fprintf(stderr, "Writing?!?!?\n");
+		}
+		if (ex_fds && FD_ISSET(dev->fd, ex_fds))
+		{
+			if (handle_event(dev) == 50) {
+				return 50;
+			}
+		}
+		/* EAGAIN - continue select loop. */
+	}
 
 	/* Stop streaming. */
 	ret = video_enable(dev, 0);
 	if (ret < 0)
 		return ret;
 
-	if (nframes == 0) {
-		print("No frames captured.\n");
-		goto done;
-	}
+	// if (nframes == 0) {
+	// 	print("No frames captured.\n");
+	// 	goto done;
+	// }
 
 	if (ts.tv_sec == start.tv_sec && ts.tv_nsec == start.tv_nsec) {
 		print("Captured %u frames (%u bytes) 0 seconds\n", i, size);
@@ -2063,21 +1658,16 @@ int video_get_fps(struct device *dev)
 #define V4L_BUFFERS_DEFAULT	8
 #define V4L_BUFFERS_MAX		32
 
-int main(int argc, char *argv[])
+int start_video( char* devname)
 {
-	struct sched_param sched;
 	struct device dev;
+
 	int ret;
 
-	/* Options parsings */
-	const struct v4l2_format_info *info;
 	/* Use video capture by default if query isn't done. */
 	unsigned int capabilities = V4L2_CAP_VIDEO_CAPTURE;
 
-	int do_requeue_last = 0;
-
-	int do_queue_late = 0;
-	int do_mmal_render = 1, do_encode = 0;
+	int do_encode = 0;
 
 	/* Video buffers */
 	enum v4l2_memory memtype = V4L2_MEMORY_MMAP;
@@ -2089,32 +1679,31 @@ int main(int argc, char *argv[])
 	unsigned int buffer_size = 0;
 	unsigned int nbufs = V4L_BUFFERS_DEFAULT;
 
-	unsigned int skip = 0;
-
 	unsigned int userptr_offset = 0;
 	enum v4l2_field field = V4L2_FIELD_ANY;
 
 	/* Capture loop */
 	enum buffer_fill_mode fill_mode = BUFFER_FILL_NONE;
-	unsigned int delay = 0, nframes = (unsigned int)-1;
-	const char *filename = "frame-#.bin";
-	const char *encode_filename = "-";
-
-	unsigned int rt_priority = 1;
 
 	video_init(&dev);
-
-	opterr = 0;
-
-	filename = NULL;
 
 	if (!video_has_fd(&dev))
 	{
 
-		ret = video_open(&dev, argv[optind]);
+		ret = video_open(&dev, devname);
 		if (ret < 0)
 			return 1;
 	}
+
+	{
+		struct v4l2_event_subscription sub;
+
+		memset(&sub, 0, sizeof(sub));
+
+		sub.type = V4L2_EVENT_SOURCE_CHANGE;
+		ioctl(dev.fd, VIDIOC_SUBSCRIBE_EVENT, &sub);
+	}
+
 
 	ret = video_querycap(&dev, &capabilities);
 	if (ret < 0)
@@ -2129,58 +1718,55 @@ int main(int argc, char *argv[])
 
 	dev.memtype = memtype;
 
-	if (video_set_format(&dev, width, height, pixelformat, stride,
-						 buffer_size, field, fmt_flags) < 0)
-	{
-		video_close(&dev);
-		return 1;
-	}
-
+	video_set_format(&dev, width, height, pixelformat, stride, buffer_size, field, fmt_flags);
 	video_set_dv_timings(&dev);
 	video_get_format(&dev);
 
-	{
-		struct v4l2_event_subscription sub;
-
-		memset(&sub, 0, sizeof(sub));
-
-		sub.type = V4L2_EVENT_SOURCE_CHANGE;
-		ioctl(dev.fd, VIDIOC_SUBSCRIBE_EVENT, &sub);
-	}
 
 	if (!dev.fps)
+	{
 		video_get_fps(&dev);
+	}
 
-	setup_mmal(&dev, nbufs, do_encode, encode_filename);
+	setup_mmal(&dev, nbufs, do_encode);
 
-	if (video_prepare_capture(&dev, nbufs, userptr_offset, filename, fill_mode))
+	video_prepare_capture(&dev, nbufs, userptr_offset, fill_mode);
+	video_queue_all_buffers(&dev, fill_mode);
+
+	ret  = video_do_capture(&dev, fill_mode);
+
+	if (ret < 0)
 	{
 		video_close(&dev);
 		return 1;
 	}
 
-	if (video_queue_all_buffers(&dev, fill_mode))
-	{
-		video_close(&dev);
-		return 1;
+	destroy_mmal(&dev);
+	video_close(&dev);
+
+	if (ret == 50) {
+		return 50;
 	}
+
+	return 0;
+}
+
+int main()
+{
+	struct sched_param sched;
+	unsigned int rt_priority = 1;
 
 	memset(&sched, 0, sizeof sched);
 	sched.sched_priority = rt_priority;
-	ret = sched_setscheduler(0, SCHED_RR, &sched);
-	if (ret < 0)
+
+	if (sched_setscheduler(0, SCHED_RR, &sched) < 0)
 		print("Failed to select RR scheduler: %s (%d)\n", strerror(errno), errno);
 
-	if (video_do_capture(&dev, nframes, skip, delay, filename,
-						 do_requeue_last, do_queue_late, fill_mode) < 0)
-	{
-		video_close(&dev);
-		return 1;
+	int ret = start_video("/dev/video0");
+
+	while(ret == 50) {
+			ret = start_video("/dev/video0");
 	}
 
-	if (do_mmal_render)
-		destroy_mmal(&dev);
-
-	video_close(&dev);
 	return 0;
 }
